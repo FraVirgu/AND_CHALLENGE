@@ -1,4 +1,5 @@
 from data_import import *
+from attention_layer import AttentionLayer
 
 def recurrent_summary(model, input_size):
     """
@@ -200,7 +201,85 @@ class RecurrentClassifier(nn.Module):
         return logits
 
 
+
+class AttentionClassifier(nn.Module):
+    """
+    Recurrent Classifier with Attention.
+    Uses an attention layer to create a context vector from all hidden states 
+    for classification.
+    """
+    def __init__(
+            self,
+            input_size,
+            hidden_size,
+            num_layers,
+            num_classes,
+            rnn_type='GRU',
+            bidirectional=False,
+            dropout_rate=0.2
+            ):
+        super().__init__()
+
+        self.rnn_type = rnn_type
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.bidirectional = bidirectional
+        
+        # Map string name to PyTorch RNN class
+        rnn_map = {
+            'RNN': nn.RNN,
+            'LSTM': nn.LSTM,
+            'GRU': nn.GRU
+        }
+
+        if rnn_type not in rnn_map:
+            raise ValueError("rnn_type must be 'RNN', 'LSTM', or 'GRU'")
+
+        rnn_module = rnn_map[rnn_type]
+        
+        # Dropout is only applied between layers (if num_layers > 1)
+        dropout_val = dropout_rate if num_layers > 1 else 0
+        
+        # Create the recurrent layer
+        self.rnn = rnn_module(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,       # Input shape: (batch, seq_len, features)
+            bidirectional=bidirectional,
+            dropout=dropout_val
+        )
+
+        # Calculate input size for attention and classifier
+        self.num_directions = 2 if bidirectional else 1
+        attention_input_size = hidden_size * self.num_directions
+
+        # 1. New Attention Layer
+        self.attention = AttentionLayer(attention_input_size)
+        
+        # 2. Final classification layer (input size is the output of the attention layer)
+        self.classifier = nn.Linear(attention_input_size, num_classes)
+
+    def forward(self, x):
+        """
+        x shape: (batch_size, seq_length, input_size)
+        """
+
+        # rnn_out shape: (batch_size, seq_len, hidden_size * num_directions)
+        # hidden is not used directly for classification anymore
+        rnn_out, _ = self.rnn(x) 
+
+        # context_vector shape: (batch_size, hidden_size * num_directions)
+        # attention_weights shape: (batch_size, seq_len, 1)
+        context_vector, _ = self.attention(rnn_out)
+
+        # Get logits from the context vector
+        logits = self.classifier(context_vector)
+        return logits
+
 # Create model and display architecture with parameter count
+
+'''
 rnn_model = RecurrentClassifier(
     input_size=input_shape[-1], # Pass the number of features
     hidden_size=128,
@@ -210,10 +289,25 @@ rnn_model = RecurrentClassifier(
     rnn_type='RNN'
     ).to(device)
 recurrent_summary(rnn_model, input_size=input_shape)
+'''
 
 
-def build_model(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
+
+
+def build_model_recurrent_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
     model = RecurrentClassifier(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        num_classes=num_classes,
+        dropout_rate=dropout_rate,
+        bidirectional=False,
+        rnn_type=rnn_type
+    ).to(device)
+    return model
+
+def build_model_attention_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
+    model = AttentionClassifier(
         input_size=input_size,
         hidden_size=hidden_size,
         num_layers=num_layers,

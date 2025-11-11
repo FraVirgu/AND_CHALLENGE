@@ -37,8 +37,8 @@ dropout_rate = 0.0
 l1_lambda =  1e-4
 l2_lambda =  1e-4
 
-EPOCHS = 300
-PATIENCE = 70
+EPOCHS = 1000
+PATIENCE = 200
 
 
 
@@ -57,7 +57,7 @@ train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_ds, batch_size=batch_size)
 
 # Build model
-model = build_model(
+model = build_model_attention_class(
     input_size=input_shape[-1],
     hidden_size=hidden_size,
     num_layers=num_layers,
