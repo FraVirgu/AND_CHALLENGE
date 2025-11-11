@@ -1,0 +1,15 @@
+{
+    "optimizer_name": "AdamW",
+    "rnn_type": "GRU",
+    "hidden_size": 64,
+    "num_layers": 2,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "dropout_rate": 0.0,
+    "l1_lambda": 0.0001,
+    "l2_lambda": 0.0001,
+    "best_val_f1": 0.9034746229318795,
+    "optimizer_kwargs": {
+        "weight_decay": 0.0001
+    }
+}
