@@ -43,8 +43,6 @@ PATIENCE = 200
 
 
 
-
-
 best_score = -1
 best_config = None
 best_model = None
