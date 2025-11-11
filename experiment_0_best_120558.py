@@ -18,7 +18,7 @@ results = {}   # will store: label → history dict
 '''
 OPTIONS TO EXPLORE:
 rnn_types = ["RNN", "GRU", "LSTM"]
-hidden_sizes = [32, 64]
+hidden_sizes = [32, 64, 128]
 num_layers_list = [1, 2, 3]
 batch_sizes = [32, 64]
 learning_rates = [1e-3, 5e-4, 1e-4]
@@ -39,8 +39,6 @@ l2_lambda =  1e-4
 
 EPOCHS = 1000
 PATIENCE = 200
-
-
 
 
 best_score = -1

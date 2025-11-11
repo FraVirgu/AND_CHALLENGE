@@ -91,9 +91,10 @@ zero_std_cols = std_test[std == 0].index.tolist()
 df_test[feature_cols] = (df_test[feature_cols] - mean_test + epsilon) / (std_test + epsilon)
 
 
+WINDOW_SIZE = 40
+STRIDE = 20
 
-
-def build_sequences(df, window=40, stride=20):
+def build_sequences(df, window=WINDOW_SIZE, stride=STRIDE):
     sequences = []
     labels = []
     for sid in df['sample_index'].unique():
@@ -106,8 +107,8 @@ def build_sequences(df, window=40, stride=20):
             idx += stride
     return np.array(sequences), np.array(labels)
 
-X_train, y_train = build_sequences(df_train_merge, window=40, stride=20)
-X_val,   y_val   = build_sequences(df_val_merge,   window=40, stride=20)
+X_train, y_train = build_sequences(df_train_merge, window=WINDOW_SIZE, stride=STRIDE)
+X_val,   y_val   = build_sequences(df_val_merge,   window=WINDOW_SIZE, stride=STRIDE)
 
 print("X_train shape:", X_train.shape)
 print("y_train shape:", y_train.shape)
@@ -116,7 +117,7 @@ print("y_val shape:", y_val.shape)
 
 
 
-def build_test_sequences(df, window=40, stride=20):
+def build_test_sequences(df, window=WINDOW_SIZE, stride=STRIDE):
     sequences = []
     sample_indices = []
     # Loop over all unique samples in the test dataframe
@@ -132,7 +133,7 @@ def build_test_sequences(df, window=40, stride=20):
 
 
 
-X_test, test_sequence_sids = build_test_sequences(df_test, window=40, stride=20)
+X_test, test_sequence_sids = build_test_sequences(df_test, window=WINDOW_SIZE, stride=STRIDE)
 
 print("X_test shape:", X_test.shape)
 print("Test sequence SIDs shape:", test_sequence_sids.shape)
@@ -181,7 +182,7 @@ val_loader   = make_loader(val_ds,   batch_size=32, shuffle=False, drop_last=Fal
 
 
 
-X_test, test_sequence_sids = build_test_sequences(df_test, window=40, stride=20)
+X_test, test_sequence_sids = build_test_sequences(df_test, window=WINDOW_SIZE, stride=STRIDE)
 
 print("X_test shape:", X_test.shape)
 print("Test sequence SIDs shape:", test_sequence_sids.shape)
