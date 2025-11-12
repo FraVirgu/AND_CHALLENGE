@@ -34,8 +34,9 @@ print(f"\n--- Running experiment: rnn_type={rnn_type}, hidden_size={hidden_size}
 
 # Recreate loaders based on batch size
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-#train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler)
 val_loader = DataLoader(val_dataset, batch_size=batch_size)
+test_loader =  make_loader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+
 
 # Build model
 model = build_model_attention_class(

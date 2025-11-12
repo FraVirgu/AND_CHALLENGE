@@ -186,11 +186,6 @@ def make_loader(dataset, batch_size=BATCH_SIZE, sampler=None, shuffle=False, dro
     )
 
 
-# --- DataLoaders ---
-train_loader = make_loader(train_dataset, batch_size= BATCH_SIZE ,sampler=sampler, drop_last=True)
-val_loader   = make_loader(val_dataset)
-test_loader  = make_loader(test_dataset)
-
 print("✅ DataLoaders and class balancing setup complete.")
 
 
