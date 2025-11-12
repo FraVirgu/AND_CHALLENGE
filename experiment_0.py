@@ -36,8 +36,8 @@ learning_rates = [1e-3, 5e-4, 1e-4]
 dropout_rates = [0.0, 0.2]
 l1_lambdas = [ 1e-5, 1e-4]
 l2_lambdas = [ 1e-5, 1e-4]
-
-
+EPOCHS = 500
+PATIENCE = 100
 
 
 
@@ -64,8 +64,8 @@ for rnn_type, hidden_size, num_layers, batch_size, lr, dropout_rate, l1_lambda, 
     print(f"\n--- Running experiment: rnn_type={rnn_type}, hidden_size={hidden_size}, num_layers={num_layers}, batch_size={batch_size}, learning_rate={lr}, dropout_rate={dropout_rate}, l1_lambda={l1_lambda}, l2_lambda={l2_lambda} ---")
 
     # Recreate loaders based on batch size
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
     # Build model
     model = build_model_recurrent_class(

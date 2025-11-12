@@ -386,18 +386,6 @@ class Dual_AttentionClassifier(nn.Module):
         return logits
 # Create model and display architecture with parameter count
 
-'''
-rnn_model = RecurrentClassifier(
-    input_size=input_shape[-1], # Pass the number of features
-    hidden_size=128,
-    num_layers=2,
-    num_classes=num_classes,
-    dropout_rate=0.,
-    rnn_type='RNN'
-    ).to(device)
-recurrent_summary(rnn_model, input_size=input_shape)
-'''
-
 
 
 
@@ -438,19 +426,3 @@ def build_model_dual_attention_class(input_size, hidden_size, num_layers, num_cl
     return model
 
 
-# Training configuration
-LEARNING_RATE = 1e-4
-EPOCHS = 50
-PATIENCE = 15
-
-# Architecture
-HIDDEN_LAYERS = 1        # Hidden layers
-HIDDEN_SIZE = 64        # Neurons per layer
-
-# Regularisation
-DROPOUT_RATE = 0.2         # Dropout probability
-L1_LAMBDA = 0            # L1 penalty
-L2_LAMBDA = 0            # L2 penalty
-
-# Set up loss function and optimizer
-criterion = nn.CrossEntropyLoss()

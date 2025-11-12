@@ -85,9 +85,9 @@ best_model = None
 best_config = None
 
 # Recreate loaders based on fixed batch size
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
-test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler  ,shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 for config in optimizer_configs:
     opt_name = config['name']
