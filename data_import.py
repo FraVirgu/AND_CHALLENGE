@@ -34,9 +34,9 @@ df_test['sample_index'] = df_test['sample_index'].astype(int)
 df = df.apply(pd.to_numeric, errors='ignore')
 df_test = df_test.apply(pd.to_numeric, errors='ignore')
 
-number_mapping_nlegs = {'two': 2, 'one+peg_leg': 1}
-number_mapping_nhands = {'two': 2, 'one+hook_hand': 1}
-number_mapping_neyes = {'two': 2, 'one+eye_patch': 1}
+number_mapping_nlegs = {'two': 1, 'one+peg_leg': 0}
+number_mapping_nhands = {'two': 1, 'one+hook_hand': 0}
+number_mapping_neyes = {'two': 1, 'one+eye_patch': 0}
 
 df['n_legs'] = df['n_legs'].replace(number_mapping_nlegs).astype(int)
 df['n_hands'] = df['n_hands'].replace(number_mapping_nhands).astype(int)

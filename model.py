@@ -200,112 +200,167 @@ class RecurrentClassifier(nn.Module):
         logits = self.classifier(hidden_to_classify)
         return logits
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+import torch.nn as nn
+
 
 class AttentionClassifier(nn.Module):
     def __init__(
         self,
-        input_size_numeric,
-        hidden_size,
-        num_layers,
-        num_classes,
-        max_timesteps,
-        emb_dim_pain=8,
-        emb_dim_time=8,
-        emb_dim_legs=2,
-        emb_dim_hands=2,
-        emb_dim_eyes=2,
-        rnn_type='GRU',
-        bidirectional=False,
-        dropout_rate=0.2
+        input_size_numeric: int,     # numeric features per timestep
+        hidden_size: int,
+        num_layers: int,
+        num_classes: int,
+        max_timesteps: int,          # kept to match API, NOT used anymore
+        emb_dim_pain: int = 3,
+        emb_dim_legs: int = 2,
+        emb_dim_hands: int = 2,
+        emb_dim_eyes: int = 2,
+        rnn_type: str = "GRU",
+        bidirectional: bool = True,
+        dropout_rate: float = 0.3,
     ):
         super().__init__()
 
-        self.dropout = nn.Dropout(dropout_rate)   # 🟩 GLOBAL DROPOUT
+        # -------------------------------
+        # Store basic settings
+        # -------------------------------
+        self.bidirectional = bidirectional
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.rnn_type = rnn_type.upper()
 
+        # -------------------------------
         # Embeddings
-        self.emb_time = nn.Embedding(max_timesteps, emb_dim_time)
+        # -------------------------------
+        # Pain survey (4 values per timestep, each ∈ {0,1,2})
+        self.emb_pain = nn.Embedding(3, emb_dim_pain)
 
-        self.emb_pain_1 = nn.Embedding(3, emb_dim_pain)
-        self.emb_pain_2 = nn.Embedding(3, emb_dim_pain)
-        self.emb_pain_3 = nn.Embedding(3, emb_dim_pain)
-        self.emb_pain_4 = nn.Embedding(3, emb_dim_pain)
+        # Legs/hands/eyes are binary {0,1}
+        self.emb_legs  = nn.Embedding(2, emb_dim_legs)
+        self.emb_hands = nn.Embedding(2, emb_dim_hands)
+        self.emb_eyes  = nn.Embedding(2, emb_dim_eyes)
 
-        self.emb_legs  = nn.Embedding(3, emb_dim_legs)
-        self.emb_hands = nn.Embedding(3, emb_dim_hands)
-        self.emb_eyes  = nn.Embedding(3, emb_dim_eyes)
-
-        # Total embedding size
+        # Total embedding dimension per timestep
         emb_dim_total = (
             4 * emb_dim_pain +
-            emb_dim_time +
             emb_dim_legs +
             emb_dim_hands +
             emb_dim_eyes
         )
 
-        # RNN input: numeric + embeddings
-        rnn_input_dim = input_size_numeric + emb_dim_total
+        # -------------------------------
+        # RNN input dimension
+        # -------------------------------
+        self.rnn_input_dim = input_size_numeric + emb_dim_total
 
-        self.rnn = nn.GRU(
-            input_size=rnn_input_dim,
+        # -------------------------------
+        # RNN layer
+        # -------------------------------
+        rnn_map = {"GRU": nn.GRU, "LSTM": nn.LSTM, "RNN": nn.RNN}
+        rnn_cls = rnn_map[self.rnn_type]
+
+        self.rnn = rnn_cls(
+            input_size=self.rnn_input_dim,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
+            bidirectional=bidirectional,
             dropout=dropout_rate if num_layers > 1 else 0.0,
-            bidirectional=bidirectional
         )
 
+        # Output D
         rnn_out_dim = hidden_size * (2 if bidirectional else 1)
 
-        # Attention
+        # -------------------------------
+        # Normalization + Dropout
+        # -------------------------------
+        self.ln = nn.LayerNorm(rnn_out_dim)
+        self.dropout = nn.Dropout(dropout_rate)
+
+        # -------------------------------
+        # Attention layer
+        # -------------------------------
         self.attn = nn.Linear(rnn_out_dim, 1)
 
+        # -------------------------------
         # Classifier head
-        self.fc = nn.Linear(rnn_out_dim, num_classes)
+        # -------------------------------
+        fc_hidden = max(32, rnn_out_dim // 2)
 
+        self.fc = nn.Sequential(
+            nn.Linear(rnn_out_dim, fc_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(fc_hidden, num_classes),
+        )
+
+    # ==============================================================
+    # Forward pass
+    # ==============================================================
 
     def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):
+        """
+        x_num:   (B, T, F_num)
+        pain:    (B, T, 4)      values ∈ {0,1,2}
+        n_legs:  (B, T)         values ∈ {0,1}
+        n_hands: (B, T)
+        n_eyes:  (B, T)
+        time_idx is ignored because time is already numeric inside x_num
+        """
 
-        # Time embedding
-        time_emb = self.emb_time(time_idx)
+        B, T, _ = x_num.shape
 
-        # Pain embeddings + time
-        p1 = self.emb_pain_1(pain[...,0]) + time_emb
-        p2 = self.emb_pain_2(pain[...,1]) + time_emb
-        p3 = self.emb_pain_3(pain[...,2]) + time_emb
-        p4 = self.emb_pain_4(pain[...,3]) + time_emb
+        # -------------------------------
+        # Pain embedding: (B,T,4,dim) → (B,T,4*dim)
+        # -------------------------------
+        pain_emb = self.emb_pain(pain)           # (B,T,4,E)
+        pain_emb = pain_emb.reshape(B, T, -1)    # (B,T,4*E)
 
-        pain_emb = torch.cat([p1, p2, p3, p4], dim=-1)
-
-        # Other categorical embeddings
+        # -------------------------------
+        # Categorical embeddings (B,T,E)
+        # -------------------------------
         legs_emb  = self.emb_legs(n_legs)
         hands_emb = self.emb_hands(n_hands)
         eyes_emb  = self.emb_eyes(n_eyes)
 
-        # Combine embeddings
-        emb_all = torch.cat([pain_emb, legs_emb, hands_emb, eyes_emb, time_emb], dim=-1)
-
-        # 🟦 DROPOUT ON EMBEDDINGS
+        # -------------------------------
+        # Concatenate embeddings
+        # -------------------------------
+        emb_all = torch.cat([pain_emb, legs_emb, hands_emb, eyes_emb], dim=-1)
         emb_all = self.dropout(emb_all)
 
-        # Full RNN input
-        rnn_input = torch.cat([x_num, emb_all], dim=-1)
+        # -------------------------------
+        # RNN input = numeric + embeddings
+        # -------------------------------
+        rnn_input = torch.cat([x_num, emb_all], dim=-1)  # (B,T,D)
 
-        # RNN
-        rnn_out, _ = self.rnn(rnn_input)
+        # -------------------------------
+        # RNN forward
+        # -------------------------------
+        rnn_out, _ = self.rnn(rnn_input)                 # (B,T,H)
 
-        # 🟧 DROPOUT ON RNN OUTPUT BEFORE ATTENTION
+        # Normalize + dropout
+        rnn_out = self.ln(rnn_out)
         rnn_out = self.dropout(rnn_out)
 
+        # -------------------------------
         # Attention
-        attn_scores = self.attn(rnn_out)
+        # -------------------------------
+        attn_scores = self.attn(rnn_out)                 # (B,T,1)
         attn_weights = torch.softmax(attn_scores, dim=1)
-        context = (attn_weights * rnn_out).sum(dim=1)
+        context = (attn_weights * rnn_out).sum(dim=1)    # (B,H)
 
-        # 🟥 DROPOUT ON FINAL CONTEXT VECTOR
         context = self.dropout(context)
 
-        return self.fc(context)
+        # -------------------------------
+        # Classifier
+        # -------------------------------
+        logits = self.fc(context)
+        return logits
 
 
 # --- 4. DUAL-STREAM ATTENTION CLASSIFIER (New Implementation) ---
@@ -446,17 +501,13 @@ def build_model_attention_class(
         num_layers=num_layers,
         num_classes=num_classes,
         max_timesteps=max_timesteps,
-
-        # embedding sizes (tune if needed)
-        emb_dim_pain=8,
-        emb_dim_time=8,
+        rnn_type=rnn_type,
+        bidirectional=True,         # use BiGRU
+        dropout_rate=dropout_rate,
+        emb_dim_pain=3,
         emb_dim_legs=2,
         emb_dim_hands=2,
         emb_dim_eyes=2,
-
-        rnn_type=rnn_type,
-        bidirectional=False,
-        dropout_rate=dropout_rate
     ).to(device)
 
     return model

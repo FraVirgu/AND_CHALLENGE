@@ -10,18 +10,17 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 results = {}   # will store: label → history dict
 
+rnn_type     = "GRU"
+hidden_size  = 48
+num_layers   = 2
+dropout_rate = 0.45     # ↑ best value for your window size
+batch_size   = 32
+lr           = 3e-4     # ↓ slower, more stable
+l1_lambda    = 0.0
+l2_lambda    = 5e-4
+EPOCHS       = 300
+PATIENCE     = 60
 
-rnn_type = "GRU"
-hidden_size = 32
-num_layers = 2
-batch_size = 32
-lr = 1e-3
-dropout_rate = 0.3
-l1_lambda = 0.0
-l2_lambda = 1e-4
-
-EPOCHS = 300
-PATIENCE = 50
 
 best_score = -1
 best_config = None
