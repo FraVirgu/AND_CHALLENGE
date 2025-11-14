@@ -81,7 +81,17 @@ for col in joint_outlier_cols:
 # --- 4. Robust Normalization (Using Median and IQR) ---
 
 # Define all feature columns (excluding identifiers and labels)
-feature_cols = [c for c in df.columns if c not in ['sample_index','time','label', 'joint_30']]
+categorical_cols = [
+    'time',
+    'pain_survey_1', 'pain_survey_2', 'pain_survey_3', 'pain_survey_4',
+    'n_legs', 'n_hands', 'n_eyes'
+]
+
+# Normalize ONLY continuous columns
+feature_cols = [
+    c for c in df.columns
+    if c not in ['sample_index', 'label', 'joint_30'] + categorical_cols
+]
 mean = df_train[feature_cols].mean()
 std = df_train[feature_cols].std()
 
@@ -138,32 +148,146 @@ def build_sequences(df, feature_cols, window=WINDOW_SIZE, stride=STRIDE, is_test
     return np.array(sequences), np.array(targets)
 
 
-# --- Build datasets ---
-X_train, y_train = build_sequences(df_train_merge, feature_cols)
-X_val,   y_val   = build_sequences(df_val_merge,   feature_cols)
-X_test,  test_sids = build_sequences(df_test, feature_cols, is_test=True)
 
-print(f"X_train: {X_train.shape}, y_train: {y_train.shape}")
-print(f"X_val:   {X_val.shape}, y_val: {y_val.shape}")
-print(f"X_test:  {X_test.shape}, test_sids: {test_sids.shape}")
+def build_sequences_multi(df, window=WINDOW_SIZE, stride=STRIDE, is_test=False):
+    X_num_seq = []
+    X_pain_seq = []
+    X_legs_seq = []
+    X_hands_seq = []
+    X_eyes_seq = []
+    X_time_seq = []
+    y_seq = []
+
+    for sid in df['sample_index'].unique():
+        temp = df[df['sample_index'] == sid]
+
+        num_vals = temp[feature_cols].values
+        pain_vals = temp[['pain_survey_1','pain_survey_2','pain_survey_3','pain_survey_4']].values
+        legs_vals = temp['n_legs'].values
+        hands_vals = temp['n_hands'].values
+        eyes_vals = temp['n_eyes'].values
+        time_vals = temp['time'].values
+
+        label = None if is_test else temp['label'].iloc[0]
+
+        for i in range(0, len(temp) - window + 1, stride):
+            X_num_seq.append(num_vals[i:i+window])
+            X_pain_seq.append(pain_vals[i:i+window])
+            X_legs_seq.append(legs_vals[i:i+window])
+            X_hands_seq.append(hands_vals[i:i+window])
+            X_eyes_seq.append(eyes_vals[i:i+window])
+            X_time_seq.append(time_vals[i:i+window])
+            y_seq.append(label if not is_test else sid)
+
+    return (
+        np.array(X_num_seq),
+        np.array(X_pain_seq),
+        np.array(X_legs_seq),
+        np.array(X_hands_seq),
+        np.array(X_eyes_seq),
+        np.array(X_time_seq),
+        np.array(y_seq)
+    )
+
+
+
+# --- Build datasets ---
+(
+    X_num_train,
+    X_pain_train,
+    n_legs_train,
+    n_hands_train,
+    n_eyes_train,
+    time_idx_train,
+    y_train
+) = build_sequences_multi(df_train_merge, is_test=False)
+
+(
+    X_num_val,
+    X_pain_val,
+    n_legs_val,
+    n_hands_val,
+    n_eyes_val,
+    time_idx_val,
+    y_val
+) = build_sequences_multi(df_val_merge, is_test=False)
+
+(
+    X_num_test,
+    X_pain_test,
+    n_legs_test,
+    n_hands_test,
+    n_eyes_test,
+    time_idx_test,
+    test_sids
+) = build_sequences_multi(df_test, is_test=True)
+
+
+
 
 # Define the input shape based on the training data
-input_shape = X_train.shape[1:]
+input_size_numeric = X_num_train.shape[-1]
+
 
 # Define the number of classes based on the categorical labels
 num_classes = len(np.unique(y_train))
 
 # --- Convert to Tensors ---
-X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
-y_train_tensor = torch.tensor(y_train, dtype=torch.long)
-X_val_tensor   = torch.tensor(X_val, dtype=torch.float32)
-y_val_tensor   = torch.tensor(y_val, dtype=torch.long)
-X_test_tensor  = torch.tensor(X_test, dtype=torch.float32)
+X_num_train_tensor   = torch.tensor(X_num_train, dtype=torch.float32)
+pain_train_tensor    = torch.tensor(X_pain_train, dtype=torch.long)
+n_legs_train_tensor  = torch.tensor(n_legs_train, dtype=torch.long)
+n_hands_train_tensor = torch.tensor(n_hands_train, dtype=torch.long)
+n_eyes_train_tensor  = torch.tensor(n_eyes_train, dtype=torch.long)
+time_idx_train_tensor= torch.tensor(time_idx_train, dtype=torch.long)
+y_train_tensor       = torch.tensor(y_train, dtype=torch.long)
+
+
+X_num_val_tensor   = torch.tensor(X_num_val, dtype=torch.float32)
+pain_val_tensor    = torch.tensor(X_pain_val, dtype=torch.long)
+n_legs_val_tensor  = torch.tensor(n_legs_val, dtype=torch.long)
+n_hands_val_tensor = torch.tensor(n_hands_val, dtype=torch.long)
+n_eyes_val_tensor  = torch.tensor(n_eyes_val, dtype=torch.long)
+time_idx_val_tensor= torch.tensor(time_idx_val, dtype=torch.long)
+y_val_tensor       = torch.tensor(y_val, dtype=torch.long)
+
+X_num_test_tensor   = torch.tensor(X_num_test, dtype=torch.float32)
+pain_test_tensor    = torch.tensor(X_pain_test, dtype=torch.long)
+n_legs_test_tensor  = torch.tensor(n_legs_test, dtype=torch.long)
+n_hands_test_tensor = torch.tensor(n_hands_test, dtype=torch.long)
+n_eyes_test_tensor  = torch.tensor(n_eyes_test, dtype=torch.long)
+time_idx_test_tensor= torch.tensor(time_idx_test, dtype=torch.long)
+
 
 # --- TensorDatasets ---
-train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-val_dataset   = TensorDataset(X_val_tensor, y_val_tensor)
-test_dataset  = TensorDataset(X_test_tensor)
+train_dataset = TensorDataset(
+    X_num_train_tensor,
+    pain_train_tensor,
+    n_legs_train_tensor,
+    n_hands_train_tensor,
+    n_eyes_train_tensor,
+    time_idx_train_tensor,
+    y_train_tensor
+)
+
+val_dataset = TensorDataset(
+    X_num_val_tensor,
+    pain_val_tensor,
+    n_legs_val_tensor,
+    n_hands_val_tensor,
+    n_eyes_val_tensor,
+    time_idx_val_tensor,
+    y_val_tensor
+)
+
+test_dataset = TensorDataset(
+    X_num_test_tensor,
+    pain_test_tensor,
+    n_legs_test_tensor,
+    n_hands_test_tensor,
+    n_eyes_test_tensor,
+    time_idx_test_tensor
+)
+
 
 
 

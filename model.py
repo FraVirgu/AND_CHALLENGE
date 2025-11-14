@@ -201,82 +201,111 @@ class RecurrentClassifier(nn.Module):
         return logits
 
 
-
 class AttentionClassifier(nn.Module):
-    """
-    Recurrent Classifier with Attention.
-    Uses an attention layer to create a context vector from all hidden states 
-    for classification.
-    """
     def __init__(
-            self,
-            input_size,
-            hidden_size,
-            num_layers,
-            num_classes,
-            rnn_type='GRU',
-            bidirectional=False,
-            dropout_rate=0.2
-            ):
+        self,
+        input_size_numeric,
+        hidden_size,
+        num_layers,
+        num_classes,
+        max_timesteps,
+        emb_dim_pain=8,
+        emb_dim_time=8,
+        emb_dim_legs=2,
+        emb_dim_hands=2,
+        emb_dim_eyes=2,
+        rnn_type='GRU',
+        bidirectional=False,
+        dropout_rate=0.2
+    ):
         super().__init__()
 
-        self.rnn_type = rnn_type
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-        self.bidirectional = bidirectional
-        
-        # Map string name to PyTorch RNN class
-        rnn_map = {
-            'RNN': nn.RNN,
-            'LSTM': nn.LSTM,
-            'GRU': nn.GRU
-        }
+        self.dropout = nn.Dropout(dropout_rate)   # 🟩 GLOBAL DROPOUT
 
-        if rnn_type not in rnn_map:
-            raise ValueError("rnn_type must be 'RNN', 'LSTM', or 'GRU'")
+        # Embeddings
+        self.emb_time = nn.Embedding(max_timesteps, emb_dim_time)
 
-        rnn_module = rnn_map[rnn_type]
-        
-        # Dropout is only applied between layers (if num_layers > 1)
-        dropout_val = dropout_rate if num_layers > 1 else 0
-        
-        # Create the recurrent layer
-        self.rnn = rnn_module(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,       # Input shape: (batch, seq_len, features)
-            bidirectional=bidirectional,
-            dropout=dropout_val
+        self.emb_pain_1 = nn.Embedding(3, emb_dim_pain)
+        self.emb_pain_2 = nn.Embedding(3, emb_dim_pain)
+        self.emb_pain_3 = nn.Embedding(3, emb_dim_pain)
+        self.emb_pain_4 = nn.Embedding(3, emb_dim_pain)
+
+        self.emb_legs  = nn.Embedding(3, emb_dim_legs)
+        self.emb_hands = nn.Embedding(3, emb_dim_hands)
+        self.emb_eyes  = nn.Embedding(3, emb_dim_eyes)
+
+        # Total embedding size
+        emb_dim_total = (
+            4 * emb_dim_pain +
+            emb_dim_time +
+            emb_dim_legs +
+            emb_dim_hands +
+            emb_dim_eyes
         )
 
-        # Calculate input size for attention and classifier
-        self.num_directions = 2 if bidirectional else 1
-        attention_input_size = hidden_size * self.num_directions
+        # RNN input: numeric + embeddings
+        rnn_input_dim = input_size_numeric + emb_dim_total
 
-        # 1. New Attention Layer
-        self.attention = AttentionLayer(attention_input_size)
-        
-        # 2. Final classification layer (input size is the output of the attention layer)
-        self.classifier = nn.Linear(attention_input_size, num_classes)
+        self.rnn = nn.GRU(
+            input_size=rnn_input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_rate if num_layers > 1 else 0.0,
+            bidirectional=bidirectional
+        )
 
-    def forward(self, x):
-        """
-        x shape: (batch_size, seq_length, input_size)
-        """
+        rnn_out_dim = hidden_size * (2 if bidirectional else 1)
 
-        # rnn_out shape: (batch_size, seq_len, hidden_size * num_directions)
-        # hidden is not used directly for classification anymore
-        rnn_out, _ = self.rnn(x) 
+        # Attention
+        self.attn = nn.Linear(rnn_out_dim, 1)
 
-        # context_vector shape: (batch_size, hidden_size * num_directions)
-        # attention_weights shape: (batch_size, seq_len, 1)
-        context_vector, _ = self.attention(rnn_out)
+        # Classifier head
+        self.fc = nn.Linear(rnn_out_dim, num_classes)
 
-        # Get logits from the context vector
-        logits = self.classifier(context_vector)
-        return logits
 
+    def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):
+
+        # Time embedding
+        time_emb = self.emb_time(time_idx)
+
+        # Pain embeddings + time
+        p1 = self.emb_pain_1(pain[...,0]) + time_emb
+        p2 = self.emb_pain_2(pain[...,1]) + time_emb
+        p3 = self.emb_pain_3(pain[...,2]) + time_emb
+        p4 = self.emb_pain_4(pain[...,3]) + time_emb
+
+        pain_emb = torch.cat([p1, p2, p3, p4], dim=-1)
+
+        # Other categorical embeddings
+        legs_emb  = self.emb_legs(n_legs)
+        hands_emb = self.emb_hands(n_hands)
+        eyes_emb  = self.emb_eyes(n_eyes)
+
+        # Combine embeddings
+        emb_all = torch.cat([pain_emb, legs_emb, hands_emb, eyes_emb, time_emb], dim=-1)
+
+        # 🟦 DROPOUT ON EMBEDDINGS
+        emb_all = self.dropout(emb_all)
+
+        # Full RNN input
+        rnn_input = torch.cat([x_num, emb_all], dim=-1)
+
+        # RNN
+        rnn_out, _ = self.rnn(rnn_input)
+
+        # 🟧 DROPOUT ON RNN OUTPUT BEFORE ATTENTION
+        rnn_out = self.dropout(rnn_out)
+
+        # Attention
+        attn_scores = self.attn(rnn_out)
+        attn_weights = torch.softmax(attn_scores, dim=1)
+        context = (attn_weights * rnn_out).sum(dim=1)
+
+        # 🟥 DROPOUT ON FINAL CONTEXT VECTOR
+        context = self.dropout(context)
+
+        return self.fc(context)
 
 
 # --- 4. DUAL-STREAM ATTENTION CLASSIFIER (New Implementation) ---
@@ -401,16 +430,35 @@ def build_model_recurrent_class(input_size, hidden_size, num_layers, num_classes
     ).to(device)
     return model
 
-def build_model_attention_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
+def build_model_attention_class(
+    input_size_numeric,
+    hidden_size,
+    num_layers,
+    num_classes,
+    max_timesteps,
+    rnn_type,
+    dropout_rate,
+    device
+):
     model = AttentionClassifier(
-        input_size=input_size,
+        input_size_numeric=input_size_numeric,
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=num_classes,
-        dropout_rate=dropout_rate,
+        max_timesteps=max_timesteps,
+
+        # embedding sizes (tune if needed)
+        emb_dim_pain=8,
+        emb_dim_time=8,
+        emb_dim_legs=2,
+        emb_dim_hands=2,
+        emb_dim_eyes=2,
+
+        rnn_type=rnn_type,
         bidirectional=False,
-        rnn_type=rnn_type
+        dropout_rate=dropout_rate
     ).to(device)
+
     return model
 
 def build_model_dual_attention_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
