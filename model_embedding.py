@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class AttentionLayer(nn.Module):
+class AttentionLayerEmbedding(nn.Module):
     """Simple additive attention layer."""
     def __init__(self, input_dim):
         super().__init__()
@@ -77,7 +77,7 @@ class HybridAttentionClassifier(nn.Module):
         attn_in_dim = hidden_size * self.num_directions
 
         # === Attention + Classifier ===
-        self.attention = AttentionLayer(attn_in_dim)
+        self.attention = AttentionLayerEmbedding(attn_in_dim)
         self.classifier = nn.Linear(attn_in_dim, num_classes)
 
     def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):

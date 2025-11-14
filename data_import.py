@@ -116,7 +116,7 @@ mean_test = df_test[feature_cols].mean()
 std_test = df_test[feature_cols].std()
 
 zero_std_cols = std_test[std == 0].index.tolist()
-df_test[feature_cols] = (df_test[feature_cols] - mean_test + epsilon) / (std_test + epsilon)
+df_test[feature_cols] = (df_test[feature_cols] - mean + epsilon) / (std + epsilon)
 
 
 
@@ -124,7 +124,7 @@ df_test[feature_cols] = (df_test[feature_cols] - mean_test + epsilon) / (std_tes
 # --- Config ---
 WINDOW_SIZE = 40
 STRIDE = 20
-batch_size = 32
+
 
 
 # --- Sequence Builder ---
@@ -177,7 +177,7 @@ test_dataset  = TensorDataset(X_test_tensor)
 
 
 # --- DataLoader helper ---
-def make_loader(dataset, batch_size=batch_size, sampler=None, shuffle=False, drop_last=False):
+def make_loader(dataset, batch_size, sampler=None, shuffle=False, drop_last=False):
     cpu_cores = os.cpu_count() or 2
     num_workers = max(2, min(4, cpu_cores))
 

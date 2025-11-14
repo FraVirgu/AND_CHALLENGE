@@ -16,6 +16,7 @@ results = {}   # will store: label → history dict
 rnn_type = "GRU"
 hidden_size =  64
 num_layers =  2
+batch_size = 32
 
 lr = 1e-3
 dropout_rate = 0.0 

@@ -6,10 +6,8 @@ from datetime import datetime
 import json
 import torch.optim
 from torch.utils.data import DataLoader
-from model_embedding import HybridAttentionClassifier
+from model_cnn import HybridCNNRNNClassifier
 
-
-import torch.nn.functional as F
 
 # --- Build multi-input sequences ---
 (
@@ -82,60 +80,7 @@ test_dataset_embedding = TensorDataset(
     time_idx_test_tensor
 )
 
-
-
-
-print("Pain surveys unique values:", np.unique(X_pain_train))
-print("n_legs unique:", np.unique(n_legs_train))
-print("n_hands unique:", np.unique(n_hands_train))
-print("n_eyes unique:", np.unique(n_eyes_train))
-print("time_idx unique:", np.unique(time_idx_train))
-
-
 max_timesteps = int(time_idx_train_tensor.max().item()) + 1  # → 160
-
-rnn_type = "GRU"
-hidden_size = 64
-num_layers = 2
-batch_size = 8
-lr = 1e-3
-dropout_rate = 0.1
-l1_lambda = 1e-4
-l2_lambda = 1e-4
-
-EPOCHS = 200
-PATIENCE = 50
-
-print(f"\n--- Running experiment: rnn_type={rnn_type}, hidden_size={hidden_size}, "
-      f"num_layers={num_layers}, batch_size={batch_size}, learning_rate={lr}, "
-      f"dropout_rate={dropout_rate}, l1_lambda={l1_lambda}, l2_lambda={l2_lambda} ---")
-
-# ------------------------------------------------------------
-# Setup
-# ------------------------------------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
-
-train_loader = DataLoader(train_dataset_embedding, batch_size=batch_size, shuffle=True)
-val_loader   = DataLoader(val_dataset_embedding, batch_size=batch_size)
-test_loader  = DataLoader(test_dataset_embedding, batch_size=batch_size)
-
-input_size_numeric = X_num_train_tensor.shape[-1]
-num_classes = len(torch.unique(y_train_tensor))
-
-model = HybridAttentionClassifier(
-    input_size_numeric=input_size_numeric,
-    hidden_size=hidden_size,
-    num_layers=num_layers,
-    num_classes=num_classes,
-    max_timesteps=max_timesteps,
-    rnn_type=rnn_type,
-    dropout_rate=dropout_rate,
-    bidirectional=False
-).to(device)
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=l2_lambda)
-scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
 
 # ------------------------------------------------------------
 # Helpers
@@ -187,8 +132,75 @@ def evaluate_embedding(model, dataloader, criterion, device):
     return total_loss / total_samples, total_correct / total_samples
 
 
+
+
+rnn_type = "GRU"
+hidden_size = 64
+num_layers = 2
+batch_size = 32
+
+lr = 1e-3
+dropout_rate = 0.1
+l1_lambda = 1e-4
+l2_lambda = 1e-4
+
+EPOCHS = 200
+PATIENCE = 50
+
+best_score = -1
+best_config = None
+best_model = None
+
+print(f"\n--- Running experiment: rnn_type={rnn_type}, hidden_size={hidden_size}, "
+      f"num_layers={num_layers}, batch_size={batch_size}, learning_rate={lr}, "
+      f"dropout_rate={dropout_rate}, l1_lambda={l1_lambda}, l2_lambda={l2_lambda} ---")
+
 # ------------------------------------------------------------
-# Training with in-memory best model
+# Setup
+# ------------------------------------------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+train_loader = DataLoader(train_dataset_embedding, batch_size=batch_size, shuffle=True)
+val_loader   = DataLoader(val_dataset_embedding, batch_size=batch_size)
+test_loader  = DataLoader(test_dataset_embedding, batch_size=batch_size)
+
+input_size_numeric = X_num_train_tensor.shape[-1]
+num_classes = len(torch.unique(y_train_tensor))
+
+# ------------------------------------------------------------
+# Instantiate CNN Hybrid Model
+# ------------------------------------------------------------
+model = HybridCNNRNNClassifier(
+    input_size_numeric=input_size_numeric,
+    hidden_size=hidden_size,
+    num_layers=num_layers,
+    num_classes=num_classes,
+    max_timesteps=max_timesteps,
+    
+    # embedding sizes
+    emb_dim_pain=8,
+    emb_dim_time=8,
+    emb_dim_legs=2,
+    emb_dim_hands=2,
+    emb_dim_eyes=2,
+
+    # configurations
+    rnn_type=rnn_type,
+    bidirectional=False,
+    dropout_rate=dropout_rate,
+
+    # CNN branch parameters
+    cnn_channels=64,
+    kernel_sizes=(3, 5, 7),
+    fc_hidden=64
+).to(device)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=l2_lambda)
+scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
+
+# ------------------------------------------------------------
+# Training Loop
 # ------------------------------------------------------------
 best_val_acc = 0
 best_model_state = None
@@ -202,7 +214,7 @@ for epoch in range(1, EPOCHS + 1):
           f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
           f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
 
-    # ⭐ Store best model in memory
+    # ⭐ Save best model in memory
     if val_acc > best_val_acc:
         best_val_acc = val_acc
         patience_counter = 0
@@ -216,7 +228,7 @@ for epoch in range(1, EPOCHS + 1):
 print(f"✅ Training completed. Best Val Accuracy: {best_val_acc:.4f}")
 
 # ------------------------------------------------------------
-# Load best model state
+# Load Best Model
 # ------------------------------------------------------------
 print("Loading best in-memory model...")
 model.load_state_dict(best_model_state)
@@ -224,7 +236,7 @@ model.to(device)
 model.eval()
 
 # ------------------------------------------------------------
-# Predict on test set
+# Predictions on Test Set
 # ------------------------------------------------------------
 all_preds = []
 with torch.no_grad():
@@ -236,7 +248,9 @@ with torch.no_grad():
 
 all_preds = np.concatenate(all_preds)
 
+# ------------------------------------------------------------
 # Aggregate per SID
+# ------------------------------------------------------------
 final_predictions = []
 final_sids = []
 
@@ -245,7 +259,9 @@ for sid in np.unique(test_sids):
     final_predictions.append(np.bincount(votes).argmax())
     final_sids.append(sid)
 
-# Save CSV
+# ------------------------------------------------------------
+# Save CSV - UPDATED NAME
+# ------------------------------------------------------------
 submission_df = pd.DataFrame({
     "sample_index": final_sids,
     "label_code": final_predictions
@@ -254,9 +270,8 @@ submission_df = pd.DataFrame({
 reverse_labels = {0: "no_pain", 1: "low_pain", 2: "high_pain"}
 submission_df["label"] = submission_df["label_code"].map(reverse_labels)
 submission_df["sample_index"] = submission_df["sample_index"].astype(str).str.zfill(3)
+
 submission_df = submission_df[["sample_index", "label"]]
-submission_df.to_csv("submission_hybrid_model.csv", index=False)
+submission_df.to_csv("submission_hybrid_cnn_model.csv", index=False)
 
-print("✅ Submission saved as submission_hybrid_model.csv")
-
-
+print("✅ Submission saved as submission_hybrid_cnn_model.csv")
