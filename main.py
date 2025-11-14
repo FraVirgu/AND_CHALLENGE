@@ -26,7 +26,6 @@ EPOCHS       = 300
 PATIENCE     = 60
 K_FOLDS      = 5
 
-criterion = torch.nn.CrossEntropyLoss()
 
 # ============================================================
 # Prepare Label Vector
