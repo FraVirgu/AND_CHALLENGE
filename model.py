@@ -113,91 +113,171 @@ def recurrent_summary(model, input_size):
     print("-" * 79)
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class RecurrentClassifier(nn.Module):
-    """
-    Generic RNN classifier (RNN, LSTM, GRU).
-    Uses the last hidden state for classification.
-    """
+
+class AttentionCNNRNNClassifier(nn.Module):
     def __init__(
-            self,
-            input_size,
-            hidden_size,
-            num_layers,
-            num_classes,
-            rnn_type='GRU',        # 'RNN', 'LSTM', or 'GRU'
-            bidirectional=False,
-            dropout_rate=0.2
-            ):
+        self,
+        input_size_numeric: int,      # numeric features per timestep
+        hidden_size: int,
+        num_layers: int,
+        num_classes: int,
+        max_timesteps: int,           # unused (kept for compatibility)
+        emb_dim_pain: int = 3,
+        emb_dim_legs: int = 2,
+        emb_dim_hands: int = 2,
+        emb_dim_eyes: int = 2,
+        cnn_channels: int = 64,
+        rnn_type: str = "GRU",
+        bidirectional: bool = True,
+        dropout_rate: float = 0.3,
+    ):
         super().__init__()
 
-        self.rnn_type = rnn_type
-        self.num_layers = num_layers
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
         self.bidirectional = bidirectional
+        self.rnn_type = rnn_type.upper()
 
-        # Map string name to PyTorch RNN class
-        rnn_map = {
-            'RNN': nn.RNN,
-            'LSTM': nn.LSTM,
-            'GRU': nn.GRU
-        }
+        # ============================================================
+        # Embeddings (pain: 4 values; others: binary)
+        # ============================================================
+        self.emb_pain = nn.Embedding(3, emb_dim_pain)
+        self.emb_legs = nn.Embedding(2, emb_dim_legs)
+        self.emb_hands = nn.Embedding(2, emb_dim_hands)
+        self.emb_eyes = nn.Embedding(2, emb_dim_eyes)
 
-        if rnn_type not in rnn_map:
-            raise ValueError("rnn_type must be 'RNN', 'LSTM', or 'GRU'")
-
-        rnn_module = rnn_map[rnn_type]
-
-        # Dropout is only applied between layers (if num_layers > 1)
-        dropout_val = dropout_rate if num_layers > 1 else 0
-
-        # Create the recurrent layer
-        self.rnn = rnn_module(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,       # Input shape: (batch, seq_len, features)
-            bidirectional=bidirectional,
-            dropout=dropout_val
+        emb_dim_total = (
+            4 * emb_dim_pain +
+            emb_dim_legs +
+            emb_dim_hands +
+            emb_dim_eyes
         )
 
-        # Calculate input size for the final classifier
-        if self.bidirectional:
-            classifier_input_size = hidden_size * 2 # Concat fwd + bwd
-        else:
-            classifier_input_size = hidden_size
+        # ============================================================
+        # CNN BLOCK (extracts local temporal patterns from numeric input)
+        # ============================================================
+        self.cnn = nn.Sequential(
+            nn.Conv1d(
+                in_channels=input_size_numeric,
+                out_channels=cnn_channels,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(cnn_channels),
 
-        # Final classification layer
-        self.classifier = nn.Linear(classifier_input_size, num_classes)
+            nn.Conv1d(
+                in_channels=cnn_channels,
+                out_channels=cnn_channels,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(cnn_channels),
+            nn.Dropout(dropout_rate)
+        )
 
-    def forward(self, x):
-        """
-        x shape: (batch_size, seq_length, input_size)
-        """
+        # CNN output dim per timestep
+        cnn_out_dim = cnn_channels
 
-        # rnn_out shape: (batch_size, seq_len, hidden_size * num_directions)
-        rnn_out, hidden = self.rnn(x)
+        # ============================================================
+        # RNN Takes (CNN_output + embeddings)
+        # ============================================================
+        rnn_input_dim = cnn_out_dim + emb_dim_total
 
-        # LSTM returns (h_n, c_n), we only need h_n
-        if self.rnn_type == 'LSTM':
-            hidden = hidden[0]
+        rnn_map = {"GRU": nn.GRU, "LSTM": nn.LSTM, "RNN": nn.RNN}
+        rnn_cls = rnn_map[self.rnn_type]
 
-        # hidden shape: (num_layers * num_directions, batch_size, hidden_size)
+        self.rnn = rnn_cls(
+            input_size=rnn_input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout_rate if num_layers > 1 else 0.0
+        )
 
-        if self.bidirectional:
-            # Reshape to (num_layers, 2, batch_size, hidden_size)
-            hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
+        rnn_out_dim = hidden_size * (2 if bidirectional else 1)
 
-            # Concat last fwd (hidden[-1, 0, ...]) and bwd (hidden[-1, 1, ...])
-            # Final shape: (batch_size, hidden_size * 2)
-            hidden_to_classify = torch.cat([hidden[-1, 0, :, :], hidden[-1, 1, :, :]], dim=1)
-        else:
-            # Take the last layer's hidden state
-            # Final shape: (batch_size, hidden_size)
-            hidden_to_classify = hidden[-1]
+        self.norm = nn.LayerNorm(rnn_out_dim)
+        self.dropout = nn.Dropout(dropout_rate)
 
-        # Get logits
-        logits = self.classifier(hidden_to_classify)
+        # ============================================================
+        # Attention
+        # ============================================================
+        self.attn = nn.Linear(rnn_out_dim, 1)
+
+        # ============================================================
+        # Classifier Head
+        # ============================================================
+        fc_hidden = max(32, rnn_out_dim // 2)
+
+        self.fc = nn.Sequential(
+            nn.Linear(rnn_out_dim, fc_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(fc_hidden, num_classes)
+        )
+
+    # ============================================================
+    # FORWARD PASS
+    # ============================================================
+    def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):
+
+        B, T, F = x_num.shape
+
+        # ---------------------------
+        # CNN expects (B, F, T)
+        # ---------------------------
+        x_cnn = x_num.permute(0, 2, 1)        # (B, F, T)
+        x_cnn = self.cnn(x_cnn)               # (B, C, T)
+        x_cnn = x_cnn.permute(0, 2, 1)        # (B, T, C)
+
+        # ---------------------------
+        # Embeddings
+        # ---------------------------
+        pain_emb = self.emb_pain(pain)        # (B,T,4,E)
+        pain_emb = pain_emb.reshape(B, T, -1)
+
+        legs_emb  = self.emb_legs(n_legs)
+        hands_emb = self.emb_hands(n_hands)
+        eyes_emb  = self.emb_eyes(n_eyes)
+
+        emb_all = torch.cat(
+            [pain_emb, legs_emb, hands_emb, eyes_emb],
+            dim=-1
+        )
+
+        # ---------------------------
+        # RNN Input = [CNN | Embeddings]
+        # ---------------------------
+        rnn_input = torch.cat([x_cnn, emb_all], dim=-1)
+
+        # ---------------------------
+        # RNN
+        # ---------------------------
+        rnn_out, _ = self.rnn(rnn_input)
+
+        rnn_out = self.norm(rnn_out)
+        rnn_out = self.dropout(rnn_out)
+
+        # ---------------------------
+        # Attention
+        # ---------------------------
+        attn_score = self.attn(rnn_out)              # (B,T,1)
+        attn_weights = torch.softmax(attn_score, 1)
+        context = (attn_weights * rnn_out).sum(1)    # (B,H)
+
+        context = self.dropout(context)
+
+        # ---------------------------
+        # Classifier
+        # ---------------------------
+        logits = self.fc(context)
         return logits
 
 import torch

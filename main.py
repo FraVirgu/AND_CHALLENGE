@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from model_train import train_one_epoch, validate_one_epoch
-from model import AttentionClassifier     # <-- your new optimized model
+from model import AttentionCNNRNNClassifier     # <-- your new optimized model
 from data_import import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -17,11 +17,11 @@ print("Using device:", device)
 rnn_type     = "GRU"
 hidden_size  = 48
 num_layers   = 2
-dropout_rate = 0.45
+dropout_rate = 0.35
 batch_size   = 32
-lr           = 3e-4
+lr           = 6e-4
 l1_lambda    = 0.0
-l2_lambda    = 5e-4
+l2_lambda    = 3e-4
 EPOCHS       = 300
 PATIENCE     = 60
 K_FOLDS      = 5
@@ -57,7 +57,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
     val_loader   = DataLoader(val_subset, batch_size=batch_size)
 
     # Model
-    model = AttentionClassifier(
+    model = AttentionCNNRNNClassifier(
         input_size_numeric=input_size_numeric,
         hidden_size=hidden_size,
         num_layers=num_layers,
@@ -131,7 +131,7 @@ print("=============================================\n")
 # ============================================================
 models = []
 for state in fold_models:
-    m = AttentionClassifier(
+    m = AttentionCNNRNNClassifier(
         input_size_numeric=input_size_numeric,
         hidden_size=hidden_size,
         num_layers=num_layers,
