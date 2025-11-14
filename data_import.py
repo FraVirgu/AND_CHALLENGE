@@ -53,7 +53,7 @@ df_label['label'] = df_label['label'].replace(training_labels).astype(int)
 
 unique_id = df['sample_index'].unique()
 random.shuffle(unique_id)
-PERCENTAGE_SPLIT = 0.8
+PERCENTAGE_SPLIT = 1
 train_id = unique_id[:int(len(unique_id)*PERCENTAGE_SPLIT)]
 val_id   = unique_id[int(len(unique_id)*PERCENTAGE_SPLIT):]
 
