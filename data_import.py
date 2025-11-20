@@ -98,7 +98,7 @@ std = df_train[feature_cols].std()
 # Use IQR (Interquartile Range) for scaling, adding epsilon for safety
 epsilon = 1e-4
 
-print("Applying Robust Scaling (Median and IQR) to all features...")
+print("Applying Scaling to all features...")
 
 # 4b. Apply Robust Scaling to Train and Validation Data
 # Scaling formula: (X - Median) / IQR
@@ -117,7 +117,7 @@ mean_test = df_test[feature_cols].mean()
 std_test = df_test[feature_cols].std()
 
 zero_std_cols = std_test[std == 0].index.tolist()
-df_test[feature_cols] = (df_test[feature_cols] - mean_test + epsilon) / (std_test + epsilon)
+df_test[feature_cols] = (df_test[feature_cols] - mean + epsilon) / (std + epsilon)
 
 
 
@@ -125,8 +125,7 @@ df_test[feature_cols] = (df_test[feature_cols] - mean_test + epsilon) / (std_tes
 # --- Config ---
 WINDOW_SIZE = 40
 STRIDE = 20
-BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
+
 
 
 # --- Sequence Builder ---
@@ -293,7 +292,7 @@ test_dataset = TensorDataset(
 
 
 # --- DataLoader helper ---
-def make_loader(dataset, batch_size=BATCH_SIZE, sampler=None, shuffle=False, drop_last=False):
+def make_loader(dataset, batch_size, sampler=None, shuffle=False, drop_last=False):
     cpu_cores = os.cpu_count() or 2
     num_workers = max(2, min(4, cpu_cores))
 
@@ -340,3 +339,51 @@ sample_weights = class_weights[y_train]
 sampler = WeightedRandomSampler(weights=sample_weights,
                                 num_samples=len(sample_weights),
                                 replacement=True)
+
+
+
+
+
+# EMBEDDING MODEL IMPORTS
+def build_sequences_multi(df, window=WINDOW_SIZE, stride=STRIDE, is_test=False):
+    """
+    Builds sliding window sequences for multi-input model:
+    Returns numeric features, pain, n_legs, n_hands, n_eyes, time_idx, and labels (if available).
+    """
+    X_num, X_pain, X_legs, X_hands, X_eyes, X_time, y_out = [], [], [], [], [], [], []
+
+    pain_cols = [f'pain_survey_{i}' for i in range(1, 5)]
+    joint_cols = [c for c in df.columns if c.startswith('joint_')]
+    
+    for sid in df['sample_index'].unique():
+        temp = df[df['sample_index'] == sid]
+        label = None if is_test else temp['label'].iloc[0]
+
+        pain = temp[pain_cols].values
+        joints = temp[joint_cols].values
+        n_legs = temp['n_legs'].values
+        n_hands = temp['n_hands'].values
+        n_eyes = temp['n_eyes'].values
+        time_vals = temp['time'].values  # 0..T-1
+
+        for idx in range(0, len(temp) - window + 1, stride):
+            # window slices
+            X_pain.append(pain[idx:idx + window])
+            X_num.append(joints[idx:idx + window])
+            X_legs.append(n_legs[idx:idx + window])
+            X_hands.append(n_hands[idx:idx + window])
+            X_eyes.append(n_eyes[idx:idx + window])
+            X_time.append(time_vals[idx:idx + window])
+            if not is_test:
+                y_out.append(label)
+
+    # Convert to np.array
+    return (
+        np.array(X_num),
+        np.array(X_pain),
+        np.array(X_legs),
+        np.array(X_hands),
+        np.array(X_eyes),
+        np.array(X_time),
+        None if is_test else np.array(y_out)
+    )

@@ -553,17 +553,7 @@ class Dual_AttentionClassifier(nn.Module):
 
 
 
-def build_model_recurrent_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
-    model = RecurrentClassifier(
-        input_size=input_size,
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        bidirectional=False,
-        rnn_type=rnn_type
-    ).to(device)
-    return model
+
 
 def build_model_attention_class(
     input_size_numeric,
@@ -591,17 +581,4 @@ def build_model_attention_class(
     ).to(device)
 
     return model
-
-def build_model_dual_attention_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
-    model = Dual_AttentionClassifier(
-        input_size=input_size,
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        bidirectional=False,
-        rnn_type=rnn_type
-    ).to(device)
-    return model
-
 
