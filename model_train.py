@@ -3,122 +3,66 @@ from model import *
 # Initialize best model tracking variables
 best_model = None
 best_performance = float('-inf')
+def train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, l1_lambda=0.0, l2_lambda=0.0):
+    model.train()
+    total_loss, total_correct, total_samples = 0, 0, 0
 
-def train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, l1_lambda=0, l2_lambda=0):
-    """
-    Perform one complete training epoch through the entire training dataset.
+    for batch_idx, batch in enumerate(train_loader):
 
-    Args:
-        model (nn.Module): The neural network model to train
-        train_loader (DataLoader): PyTorch DataLoader containing training data batches
-        criterion (nn.Module): Loss function (e.g., CrossEntropyLoss, MSELoss)
-        optimizer (torch.optim): Optimization algorithm (e.g., Adam, SGD)
-        scaler (GradScaler): PyTorch's gradient scaler for mixed precision training
-        device (torch.device): Computing device ('cuda' for GPU, 'cpu' for CPU)
-        l1_lambda (float): Lambda for L1 regularization
-        l2_lambda (float): Lambda for L2 regularization
+        x_num, pain, n_legs, n_hands, n_eyes, time_idx, targets = batch
+        x_num      = x_num.to(device)
+        pain       = pain.to(device)
+        n_legs     = n_legs.to(device)
+        n_hands    = n_hands.to(device)
+        n_eyes     = n_eyes.to(device)
+        time_idx   = time_idx.to(device)
+        targets    = targets.to(device)
 
-    Returns:
-        tuple: (average_loss, f1 score) - Training loss and f1 score for this epoch
-    """
-    model.train()  # Set model to training mode
-
-    running_loss = 0.0
-    all_predictions = []
-    all_targets = []
-
-    # Iterate through training batches
-    for batch_idx, (inputs, targets) in enumerate(train_loader):
-        inputs = inputs.float().to(device)      # model input must be float32
-        targets = targets.long().to(device)     # <-- classification labels must be long
-
-        # Clear gradients from previous step
         optimizer.zero_grad(set_to_none=True)
 
-        # Forward pass with mixed precision (if CUDA available)
-        with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
-            logits = model(inputs)
+        with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            logits = model(x_num, pain, n_legs, n_hands, n_eyes, time_idx)
             loss = criterion(logits, targets)
 
-            # Add L1 and L2 regularization
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
-            l2_norm = sum(p.pow(2).sum() for p in model.parameters())
-            loss = loss + l1_lambda * l1_norm + l2_lambda * l2_norm
-
-
-        # Backward pass with gradient scaling
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
-        # Accumulate metrics
-        running_loss += loss.item() * inputs.size(0)
-        predictions = logits.argmax(dim=1)
-        all_predictions.append(predictions.cpu().numpy())
-        all_targets.append(targets.cpu().numpy())
+        # Metrics
+        preds = logits.argmax(dim=1)
+        total_loss += loss.item() * targets.size(0)
+        total_correct += (preds == targets).sum().item()
+        total_samples += targets.size(0)
 
-    # Calculate epoch metrics
-    epoch_loss = running_loss / len(train_loader.dataset)
-    epoch_f1 = f1_score(
-        np.concatenate(all_targets),
-        np.concatenate(all_predictions),
-        average='weighted'
-    )
+    return total_loss / total_samples, total_correct / total_samples
 
-    return epoch_loss, epoch_f1
 
 
 def validate_one_epoch(model, val_loader, criterion, device):
-    """
-    Perform one complete validation epoch through the entire validation dataset.
+    model.eval()
+    total_loss, total_correct, total_samples = 0, 0, 0
 
-    Args:
-        model (nn.Module): The neural network model to evaluate (must be in eval mode)
-        val_loader (DataLoader): PyTorch DataLoader containing validation data batches
-        criterion (nn.Module): Loss function used to calculate validation loss
-        device (torch.device): Computing device ('cuda' for GPU, 'cpu' for CPU)
-
-    Returns:
-        tuple: (average_loss, accuracy) - Validation loss and accuracy for this epoch
-
-    Note:
-        This function automatically sets the model to evaluation mode and disables
-        gradient computation for efficiency during validation.
-    """
-    model.eval()  # Set model to evaluation mode
-
-    running_loss = 0.0
-    all_predictions = []
-    all_targets = []
-
-    # Disable gradient computation for validation
     with torch.no_grad():
-        for inputs, targets in val_loader:
-            inputs = inputs.float().to(device)      # model input must be float32
-            targets = targets.long().to(device)     # <-- classification labels must be long
+        for batch in val_loader:
 
+            x_num, pain, n_legs, n_hands, n_eyes, time_idx, targets = batch
+            x_num      = x_num.to(device)
+            pain       = pain.to(device)
+            n_legs     = n_legs.to(device)
+            n_hands    = n_hands.to(device)
+            n_eyes     = n_eyes.to(device)
+            time_idx   = time_idx.to(device)
+            targets    = targets.to(device)
 
-            # Forward pass with mixed precision (if CUDA available)
-            with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
-                logits = model(inputs)
-                loss = criterion(logits, targets)
+            logits = model(x_num, pain, n_legs, n_hands, n_eyes, time_idx)
+            loss = criterion(logits, targets)
 
-            # Accumulate metrics
-            running_loss += loss.item() * inputs.size(0)
-            predictions = logits.argmax(dim=1)
-            all_predictions.append(predictions.cpu().numpy())
-            all_targets.append(targets.cpu().numpy())
+            preds = logits.argmax(dim=1)
+            total_loss += loss.item() * targets.size(0)
+            total_correct += (preds == targets).sum().item()
+            total_samples += targets.size(0)
 
-    # Calculate epoch metrics
-    epoch_loss = running_loss / len(val_loader.dataset)
-    epoch_accuracy = f1_score(
-        np.concatenate(all_targets),
-        np.concatenate(all_predictions),
-        average='weighted'
-    )
-
-    return epoch_loss, epoch_accuracy
-
+    return total_loss / total_samples, total_correct / total_samples
 
 
 

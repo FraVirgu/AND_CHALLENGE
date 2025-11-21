@@ -113,100 +113,347 @@ def recurrent_summary(model, input_size):
     print("-" * 79)
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class RecurrentClassifier(nn.Module):
-    """
-    Generic RNN classifier (RNN, LSTM, GRU).
-    Uses the last hidden state for classification.
-    """
+
+class AttentionCNNRNNClassifier(nn.Module):
     def __init__(
-            self,
-            input_size,
-            hidden_size,
-            num_layers,
-            num_classes,
-            rnn_type='GRU',        # 'RNN', 'LSTM', or 'GRU'
-            bidirectional=False,
-            dropout_rate=0.2
-            ):
+        self,
+        input_size_numeric: int,      # numeric features per timestep
+        hidden_size: int,
+        num_layers: int,
+        num_classes: int,
+        max_timesteps: int,           # unused (kept for compatibility)
+        emb_dim_pain: int = 3,
+        emb_dim_legs: int = 2,
+        emb_dim_hands: int = 2,
+        emb_dim_eyes: int = 2,
+        cnn_channels: int = 64,
+        rnn_type: str = "GRU",
+        bidirectional: bool = True,
+        dropout_rate: float = 0.3,
+    ):
         super().__init__()
 
-        self.rnn_type = rnn_type
-        self.num_layers = num_layers
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
         self.bidirectional = bidirectional
+        self.rnn_type = rnn_type.upper()
 
-        # Map string name to PyTorch RNN class
-        rnn_map = {
-            'RNN': nn.RNN,
-            'LSTM': nn.LSTM,
-            'GRU': nn.GRU
-        }
+        # ============================================================
+        # Embeddings (pain: 4 values; others: binary)
+        # ============================================================
+        self.emb_pain = nn.Embedding(3, emb_dim_pain)
+        self.emb_legs = nn.Embedding(2, emb_dim_legs)
+        self.emb_hands = nn.Embedding(2, emb_dim_hands)
+        self.emb_eyes = nn.Embedding(2, emb_dim_eyes)
 
-        if rnn_type not in rnn_map:
-            raise ValueError("rnn_type must be 'RNN', 'LSTM', or 'GRU'")
-
-        rnn_module = rnn_map[rnn_type]
-
-        # Dropout is only applied between layers (if num_layers > 1)
-        dropout_val = dropout_rate if num_layers > 1 else 0
-
-        # Create the recurrent layer
-        self.rnn = rnn_module(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,       # Input shape: (batch, seq_len, features)
-            bidirectional=bidirectional,
-            dropout=dropout_val
+        emb_dim_total = (
+            4 * emb_dim_pain +
+            emb_dim_legs +
+            emb_dim_hands +
+            emb_dim_eyes
         )
 
-        # Calculate input size for the final classifier
-        if self.bidirectional:
-            classifier_input_size = hidden_size * 2 # Concat fwd + bwd
-        else:
-            classifier_input_size = hidden_size
+        # ============================================================
+        # CNN BLOCK (extracts local temporal patterns from numeric input)
+        # ============================================================
+        self.cnn = nn.Sequential(
+            nn.Conv1d(
+                in_channels=input_size_numeric,
+                out_channels=cnn_channels,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(cnn_channels),
 
-        # Final classification layer
-        self.classifier = nn.Linear(classifier_input_size, num_classes)
+            nn.Conv1d(
+                in_channels=cnn_channels,
+                out_channels=cnn_channels,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(cnn_channels),
+            nn.Dropout(dropout_rate)
+        )
 
-    def forward(self, x):
-        """
-        x shape: (batch_size, seq_length, input_size)
-        """
+        # CNN output dim per timestep
+        cnn_out_dim = cnn_channels
 
-        # rnn_out shape: (batch_size, seq_len, hidden_size * num_directions)
-        rnn_out, hidden = self.rnn(x)
+        # ============================================================
+        # RNN Takes (CNN_output + embeddings)
+        # ============================================================
+        rnn_input_dim = cnn_out_dim + emb_dim_total
 
-        # LSTM returns (h_n, c_n), we only need h_n
-        if self.rnn_type == 'LSTM':
-            hidden = hidden[0]
+        rnn_map = {"GRU": nn.GRU, "LSTM": nn.LSTM, "RNN": nn.RNN}
+        rnn_cls = rnn_map[self.rnn_type]
 
-        # hidden shape: (num_layers * num_directions, batch_size, hidden_size)
+        self.rnn = rnn_cls(
+            input_size=rnn_input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout_rate if num_layers > 1 else 0.0
+        )
 
-        if self.bidirectional:
-            # Reshape to (num_layers, 2, batch_size, hidden_size)
-            hidden = hidden.view(self.num_layers, 2, -1, self.hidden_size)
+        rnn_out_dim = hidden_size * (2 if bidirectional else 1)
 
-            # Concat last fwd (hidden[-1, 0, ...]) and bwd (hidden[-1, 1, ...])
-            # Final shape: (batch_size, hidden_size * 2)
-            hidden_to_classify = torch.cat([hidden[-1, 0, :, :], hidden[-1, 1, :, :]], dim=1)
-        else:
-            # Take the last layer's hidden state
-            # Final shape: (batch_size, hidden_size)
-            hidden_to_classify = hidden[-1]
+        self.norm = nn.LayerNorm(rnn_out_dim)
+        self.dropout = nn.Dropout(dropout_rate)
 
-        # Get logits
-        logits = self.classifier(hidden_to_classify)
+        # ============================================================
+        # Attention
+        # ============================================================
+        self.attn = nn.Linear(rnn_out_dim, 1)
+
+        # ============================================================
+        # Classifier Head
+        # ============================================================
+        fc_hidden = max(32, rnn_out_dim // 2)
+
+        self.fc = nn.Sequential(
+            nn.Linear(rnn_out_dim, fc_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(fc_hidden, num_classes)
+        )
+
+    # ============================================================
+    # FORWARD PASS
+    # ============================================================
+    def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):
+
+        B, T, F = x_num.shape
+
+        # ---------------------------
+        # CNN expects (B, F, T)
+        # ---------------------------
+        x_cnn = x_num.permute(0, 2, 1)        # (B, F, T)
+        x_cnn = self.cnn(x_cnn)               # (B, C, T)
+        x_cnn = x_cnn.permute(0, 2, 1)        # (B, T, C)
+
+        # ---------------------------
+        # Embeddings
+        # ---------------------------
+        pain_emb = self.emb_pain(pain)        # (B,T,4,E)
+        pain_emb = pain_emb.reshape(B, T, -1)
+
+        legs_emb  = self.emb_legs(n_legs)
+        hands_emb = self.emb_hands(n_hands)
+        eyes_emb  = self.emb_eyes(n_eyes)
+
+        emb_all = torch.cat(
+            [pain_emb, legs_emb, hands_emb, eyes_emb],
+            dim=-1
+        )
+
+        # ---------------------------
+        # RNN Input = [CNN | Embeddings]
+        # ---------------------------
+        rnn_input = torch.cat([x_cnn, emb_all], dim=-1)
+
+        # ---------------------------
+        # RNN
+        # ---------------------------
+        rnn_out, _ = self.rnn(rnn_input)
+
+        rnn_out = self.norm(rnn_out)
+        rnn_out = self.dropout(rnn_out)
+
+        # ---------------------------
+        # Attention
+        # ---------------------------
+        attn_score = self.attn(rnn_out)              # (B,T,1)
+        attn_weights = torch.softmax(attn_score, 1)
+        context = (attn_weights * rnn_out).sum(1)    # (B,H)
+
+        context = self.dropout(context)
+
+        # ---------------------------
+        # Classifier
+        # ---------------------------
+        logits = self.fc(context)
         return logits
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+import torch.nn as nn
 
 
 class AttentionClassifier(nn.Module):
+    def __init__(
+        self,
+        input_size_numeric: int,     # numeric features per timestep
+        hidden_size: int,
+        num_layers: int,
+        num_classes: int,
+        max_timesteps: int,          # kept to match API, NOT used anymore
+        emb_dim_pain: int = 3,
+        emb_dim_legs: int = 2,
+        emb_dim_hands: int = 2,
+        emb_dim_eyes: int = 2,
+        rnn_type: str = "GRU",
+        bidirectional: bool = True,
+        dropout_rate: float = 0.3,
+    ):
+        super().__init__()
+
+        # -------------------------------
+        # Store basic settings
+        # -------------------------------
+        self.bidirectional = bidirectional
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.rnn_type = rnn_type.upper()
+
+        # -------------------------------
+        # Embeddings
+        # -------------------------------
+        # Pain survey (4 values per timestep, each ∈ {0,1,2})
+        self.emb_pain = nn.Embedding(3, emb_dim_pain)
+
+        # Legs/hands/eyes are binary {0,1}
+        self.emb_legs  = nn.Embedding(2, emb_dim_legs)
+        self.emb_hands = nn.Embedding(2, emb_dim_hands)
+        self.emb_eyes  = nn.Embedding(2, emb_dim_eyes)
+
+        # Total embedding dimension per timestep
+        emb_dim_total = (
+            4 * emb_dim_pain +
+            emb_dim_legs +
+            emb_dim_hands +
+            emb_dim_eyes
+        )
+
+        # -------------------------------
+        # RNN input dimension
+        # -------------------------------
+        self.rnn_input_dim = input_size_numeric + emb_dim_total
+
+        # -------------------------------
+        # RNN layer
+        # -------------------------------
+        rnn_map = {"GRU": nn.GRU, "LSTM": nn.LSTM, "RNN": nn.RNN}
+        rnn_cls = rnn_map[self.rnn_type]
+
+        self.rnn = rnn_cls(
+            input_size=self.rnn_input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout_rate if num_layers > 1 else 0.0,
+        )
+
+        # Output D
+        rnn_out_dim = hidden_size * (2 if bidirectional else 1)
+
+        # -------------------------------
+        # Normalization + Dropout
+        # -------------------------------
+        self.ln = nn.LayerNorm(rnn_out_dim)
+        self.dropout = nn.Dropout(dropout_rate)
+
+        # -------------------------------
+        # Attention layer
+        # -------------------------------
+        self.attn = nn.Linear(rnn_out_dim, 1)
+
+        # -------------------------------
+        # Classifier head
+        # -------------------------------
+        fc_hidden = max(32, rnn_out_dim // 2)
+
+        self.fc = nn.Sequential(
+            nn.Linear(rnn_out_dim, fc_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(fc_hidden, num_classes),
+        )
+
+    # ==============================================================
+    # Forward pass
+    # ==============================================================
+
+    def forward(self, x_num, pain, n_legs, n_hands, n_eyes, time_idx):
+        """
+        x_num:   (B, T, F_num)
+        pain:    (B, T, 4)      values ∈ {0,1,2}
+        n_legs:  (B, T)         values ∈ {0,1}
+        n_hands: (B, T)
+        n_eyes:  (B, T)
+        time_idx is ignored because time is already numeric inside x_num
+        """
+
+        B, T, _ = x_num.shape
+
+        # -------------------------------
+        # Pain embedding: (B,T,4,dim) → (B,T,4*dim)
+        # -------------------------------
+        pain_emb = self.emb_pain(pain)           # (B,T,4,E)
+        pain_emb = pain_emb.reshape(B, T, -1)    # (B,T,4*E)
+
+        # -------------------------------
+        # Categorical embeddings (B,T,E)
+        # -------------------------------
+        legs_emb  = self.emb_legs(n_legs)
+        hands_emb = self.emb_hands(n_hands)
+        eyes_emb  = self.emb_eyes(n_eyes)
+
+        # -------------------------------
+        # Concatenate embeddings
+        # -------------------------------
+        emb_all = torch.cat([pain_emb, legs_emb, hands_emb, eyes_emb], dim=-1)
+        emb_all = self.dropout(emb_all)
+
+        # -------------------------------
+        # RNN input = numeric + embeddings
+        # -------------------------------
+        rnn_input = torch.cat([x_num, emb_all], dim=-1)  # (B,T,D)
+
+        # -------------------------------
+        # RNN forward
+        # -------------------------------
+        rnn_out, _ = self.rnn(rnn_input)                 # (B,T,H)
+
+        # Normalize + dropout
+        rnn_out = self.ln(rnn_out)
+        rnn_out = self.dropout(rnn_out)
+
+        # -------------------------------
+        # Attention
+        # -------------------------------
+        attn_scores = self.attn(rnn_out)                 # (B,T,1)
+        attn_weights = torch.softmax(attn_scores, dim=1)
+        context = (attn_weights * rnn_out).sum(dim=1)    # (B,H)
+
+        context = self.dropout(context)
+
+        # -------------------------------
+        # Classifier
+        # -------------------------------
+        logits = self.fc(context)
+        return logits
+
+
+# --- 4. DUAL-STREAM ATTENTION CLASSIFIER (New Implementation) ---
+class Dual_AttentionClassifier(nn.Module):
     """
-    Recurrent Classifier with Attention.
-    Uses an attention layer to create a context vector from all hidden states 
-    for classification.
+    Recurrent Classifier with Dual-Stream Attention Enhancement.
+    
+    Uses two separate RNNs:
+    1. rnn_left: Generates the sequence of features (Keys/Values).
+    2. rnn_right: Generates a final context vector (which could serve as Query implicitly).
+    
+    The sequence output of rnn_left feeds the attention layer. The attention context 
+    vector is concatenated with the final hidden state of rnn_right for classification.
     """
     def __init__(
             self,
@@ -225,82 +472,113 @@ class AttentionClassifier(nn.Module):
         self.hidden_size = hidden_size
         self.bidirectional = bidirectional
         
-        # Map string name to PyTorch RNN class
-        rnn_map = {
-            'RNN': nn.RNN,
-            'LSTM': nn.LSTM,
-            'GRU': nn.GRU
-        }
-
+        rnn_map = {'RNN': nn.RNN, 'LSTM': nn.LSTM, 'GRU': nn.GRU}
         if rnn_type not in rnn_map:
             raise ValueError("rnn_type must be 'RNN', 'LSTM', or 'GRU'")
 
         rnn_module = rnn_map[rnn_type]
-        
-        # Dropout is only applied between layers (if num_layers > 1)
         dropout_val = dropout_rate if num_layers > 1 else 0
+        num_directions = 2 if bidirectional else 1
         
-        # Create the recurrent layer
-        self.rnn = rnn_module(
+        # RNN 1 (Left Stream - Provides sequence for Attention/K, V)
+        self.rnn_left = rnn_module(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            batch_first=True,       # Input shape: (batch, seq_len, features)
+            batch_first=True,
             bidirectional=bidirectional,
             dropout=dropout_val
         )
 
-        # Calculate input size for attention and classifier
-        self.num_directions = 2 if bidirectional else 1
-        attention_input_size = hidden_size * self.num_directions
+        # RNN 2 (Right Stream - Provides feature vector to concatenate with context/Q)
+        self.rnn_right = rnn_module(
+            input_size=input_size, # Can use input_size or hidden_size of rnn_left if stacked
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout_val
+        )
 
-        # 1. New Attention Layer
+        attention_input_size = hidden_size * num_directions
+        
+        # 1. Attention Layer (operates on rnn_left output)
         self.attention = AttentionLayer(attention_input_size)
         
-        # 2. Final classification layer (input size is the output of the attention layer)
-        self.classifier = nn.Linear(attention_input_size, num_classes)
+        # Calculate combined input size for classifier: 
+        # (Attention Context Vector) + (Final Hidden State of rnn_right)
+        classifier_input_size = attention_input_size + attention_input_size 
+
+        # 2. Final classification layer
+        self.classifier = nn.Linear(classifier_input_size, num_classes)
 
     def forward(self, x):
         """
         x shape: (batch_size, seq_length, input_size)
         """
 
-        # rnn_out shape: (batch_size, seq_len, hidden_size * num_directions)
-        # hidden is not used directly for classification anymore
-        rnn_out, _ = self.rnn(x) 
+        # Stream 1: Left RNN (Encoder/Key/Value Sequence)
+        # rnn_left_out shape: (batch_size, seq_len, hidden_size * num_directions)
+        rnn_left_out, _ = self.rnn_left(x) 
 
+        # Stream 2: Right RNN (Context/Feature Sequence)
+        # rnn_right_out shape: (batch_size, seq_len, hidden_size * num_directions)
+        rnn_right_out, hidden_right = self.rnn_right(x)
+        
+        # Extract the final hidden state of rnn_right
+        if self.rnn_type == 'LSTM':
+            hidden_right = hidden_right[0]
+
+        if self.bidirectional:
+            # Concat last fwd and bwd states of the *last layer* of the right RNN
+            hidden_right = hidden_right.view(self.num_layers, 2, -1, self.hidden_size)
+            final_right_state = torch.cat([hidden_right[-1, 0, :, :], hidden_right[-1, 1, :, :]], dim=1)
+        else:
+            # Take the last layer's hidden state
+            final_right_state = hidden_right[-1]
+        
+        # Attention: Calculate context vector c over rnn_left_out
         # context_vector shape: (batch_size, hidden_size * num_directions)
-        # attention_weights shape: (batch_size, seq_len, 1)
-        context_vector, _ = self.attention(rnn_out)
+        context_vector, _ = self.attention(rnn_left_out)
 
-        # Get logits from the context vector
-        logits = self.classifier(context_vector)
+        # Combine the context vector (from Attention over rnn_left) 
+        # and the final state (from rnn_right)
+        combined_features = torch.cat([context_vector, final_right_state], dim=1)
+
+        # Get logits
+        logits = self.classifier(combined_features)
         return logits
+# Create model and display architecture with parameter count
 
 
 
 
-def build_model_recurrent_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
-    model = RecurrentClassifier(
-        input_size=input_size,
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        num_classes=num_classes,
-        dropout_rate=dropout_rate,
-        bidirectional=False,
-        rnn_type=rnn_type
-    ).to(device)
-    return model
 
-def build_model_attention_class(input_size, hidden_size, num_layers, num_classes, rnn_type, dropout_rate, device):
+
+def build_model_attention_class(
+    input_size_numeric,
+    hidden_size,
+    num_layers,
+    num_classes,
+    max_timesteps,
+    rnn_type,
+    dropout_rate,
+    device
+):
     model = AttentionClassifier(
-        input_size=input_size,
+        input_size_numeric=input_size_numeric,
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=num_classes,
+        max_timesteps=max_timesteps,
+        rnn_type=rnn_type,
+        bidirectional=True,         # use BiGRU
         dropout_rate=dropout_rate,
-        bidirectional=False,
-        rnn_type=rnn_type
+        emb_dim_pain=3,
+        emb_dim_legs=2,
+        emb_dim_hands=2,
+        emb_dim_eyes=2,
     ).to(device)
+
     return model
 
